@@ -1,11 +1,11 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='credstash',
-    version='1.5.2',
-    description='A utility for managing secrets in the cloud using AWS KMS and DynamoDB',
+    name='credstash-local',
+    version='1.0.0',
+    description='A utility for managing secrets in using AWS KMS',
     license='Apache2',
-    url='https://github.com/LuminalOSS/credstash',
+    url='https://github.com/hirenj/credstash-local',
     classifiers=[
         'Intended Audience :: Developers',
         'Intended Audience :: System Administrators',
@@ -13,11 +13,11 @@ setup(
         ],
     install_requires=['boto>=2.38.0', 'pycrypto>=2.6.1', 'boto3>=1.1.1'],
     extras_require = {'YAML': ['PyYAML>=3.10']},
-    scripts=['credstash.py'],
-    py_modules=['credstash'],
+    scripts=['credstash-local.py'],
+    py_modules=['credstash-local'],
     entry_points={
         'console_scripts': [
-            'credstash = credstash:main'
+            'credstash-local = credstash-local:main'
             ]
         }
     )

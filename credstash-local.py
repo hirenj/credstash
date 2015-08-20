@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import argparse
-import boto.dynamodb2
 import boto.kms
 import csv
 import json
@@ -38,11 +37,6 @@ except ImportError:
     NO_YAML = True
 
 from base64 import b64encode, b64decode
-from boto.dynamodb2.exceptions import ConditionalCheckFailedException
-from boto.dynamodb2.exceptions import ItemNotFound
-from boto.dynamodb2.fields import HashKey, RangeKey
-from boto.dynamodb2.table import Table
-from boto.dynamodb2.types import STRING
 from boto.kms.exceptions import InvalidCiphertextException
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA256
@@ -126,34 +120,8 @@ def csv_dump(dictionary):
     return csvfile.getvalue()
 
 
-def getHighestVersion(name, region="us-east-1", table="credential-store"):
-    '''
-    Return the highest version of `name` in the table
-    '''
-    secretStore = Table(table,
-                        connection=boto.dynamodb2.connect_to_region(region))
-    result_set = [x for x in secretStore.query_2(limit=1, reverse=True,
-                                                 consistent=True,
-                                                 name__eq=name)]
-    if not result_set:
-        return 0
-    else:
-        return result_set[0]["version"]
-
-
-def listSecrets(region="us-east-1", table="credential-store"):
-    '''
-    do a full-table scan of the credential-store,
-    and return the names and versions of every credential
-    '''
-    secretStore = Table(table,
-                        connection=boto.dynamodb2.connect_to_region(region))
-    rs = secretStore.scan(attributes=("name", "version"))
-    return [secret for secret in rs]
-
-
 def putSecret(name, secret, version, kms_key="alias/credstash",
-              region="us-east-1", table="credential-store", context=None):
+              region="us-east-1", context=None):
     '''
     put a secret called `name` into the secret-store,
     protected by the key kms_key
@@ -163,10 +131,10 @@ def putSecret(name, secret, version, kms_key="alias/credstash",
     kms = boto3.client('kms', region_name=region)
     # generate a a 64 byte key.
     # Half will be for data encryption, the other half for HMAC
-    try:
-        kms_response = kms.generate_data_key(KeyId=kms_key, EncryptionContext=context, NumberOfBytes=64)
-    except:
-        raise KmsError("Could not generate key using KMS key %s" % kms_key)
+    # try:
+    kms_response = kms.generate_data_key(KeyId=kms_key, EncryptionContext=context, NumberOfBytes=64)
+    # except:
+    #     raise KmsError("Could not generate key using KMS key %s" % kms_key)
     data_key = kms_response['Plaintext'][:32]
     hmac_key = kms_response['Plaintext'][32:]
     wrapped_key = kms_response['CiphertextBlob']
@@ -179,35 +147,14 @@ def putSecret(name, secret, version, kms_key="alias/credstash",
     hmac = HMAC(hmac_key, msg=c_text, digestmod=SHA256)
     b64hmac = hmac.hexdigest()
 
-    secretStore = Table(table,
-                        connection=boto.dynamodb2.connect_to_region(region))
-
     data = {}
     data['name'] = name
     data['version'] = version if version != "" else "1"
     data['key'] = b64encode(wrapped_key).decode('utf-8')
     data['contents'] = b64encode(c_text).decode('utf-8')
     data['hmac'] = b64hmac
-    return secretStore.put_item(data=data)
-
-
-def getAllSecrets(version="", region="us-east-1",
-                  table="credential-store", context=None):
-    '''
-    fetch and decrypt all secrets
-    '''
-    output = {}
-    secrets = listSecrets(region, table)
-    for credential in set([x["name"] for x in secrets]):
-        try:
-            output[credential] = getSecret(credential,
-                                           version,
-                                           region,
-                                           table,
-                                           context)
-        except:
-            pass
-    return output
+    with open('{0}.{1}.json'.format(name,data['version']), 'w') as fp:
+      json.dump(data, fp)
 
 
 def getSecret(name, version="", region="us-east-1",
@@ -217,18 +164,17 @@ def getSecret(name, version="", region="us-east-1",
     '''
     if not context:
         context = {}
-    secretStore = Table(table,
-                        connection=boto.dynamodb2.connect_to_region(region))
+
     if version == "":
         # do a consistent fetch of the credential with the highest version
-        result_set = [x for x in secretStore.query_2(limit=1, reverse=True,
-                                                     consistent=True,
-                                                     name__eq=name)]
-        if not result_set:
-            raise ItemNotFound("Item {'name': '%s'} couldn't be found." % name)
-        material = result_set[0]
-    else:
-        material = secretStore.get_item(name=name, version=version)
+        # list all files matching pattern
+        pass
+#        if not result_set:
+#            raise ItemNotFound("Item {'name': '%s'} couldn't be found." % name)
+#        material = result_set[0]
+
+    with open("{0}.{1}.json".format(name, version), 'r') as fp:
+        material = json.load(fp)
 
     kms = boto3.client('kms', region_name=region)
     # Check the HMAC before we decrypt to verify ciphertext integrity
@@ -259,38 +205,8 @@ def getSecret(name, version="", region="us-east-1",
     return plaintext
 
 
-def deleteSecrets(name, region="us-east-1", table="credential-store"):
-    secretStore = Table(table,
-                        connection=boto.dynamodb2.connect_to_region(region))
-    rs = secretStore.scan(name__eq=name)
-    for i in rs:
-        print("Deleting %s -- version %s" % (i["name"], i["version"]))
-        i.delete()
-
-
-def createDdbTable(region="us-east-1", table="credential-store"):
-    '''
-    create the secret store table in DDB in the specified region
-    '''
-    d_conn = boto.dynamodb2.connect_to_region(region)
-    if table in d_conn.list_tables()['TableNames']:
-        print("Credential Store table already exists")
-        return
-    print("Creating table...")
-    secrets = Table.create(table, schema=[
-        HashKey('name', data_type=STRING),
-        RangeKey('version', data_type=STRING)
-        ], throughput={
-            'read': 1,
-            'write': 1
-        }, connection=d_conn)
-    timeout = 1
-    while secrets.describe()['Table']['TableStatus'] != "ACTIVE":
-        print("Waiting for table to be created...")
-        time.sleep(timeout)
-        timeout = timeout * 2 if timeout < 8 else timeout
-    print("Table has been created. "
-          "Go read the README about how to create your KMS key")
+def deleteSecrets(name, region="us-east-1"):
+    pass
 
 
 def main():
@@ -304,9 +220,6 @@ def main():
                                   "will use the value of the "
                                   "AWS_DEFAULT_REGION env variable, "
                                   "or if that is not set, us-east-1")
-    parsers['super'].add_argument("-t", "--table", default="credential-store",
-                                  help="DynamoDB table to use for "
-                                  "credential storage")
     subparsers = parsers['super'].add_subparsers(help='Try commands like '
                                                  '"{name} get -h" or "{name}'
                                                  'put --help" to get each'
@@ -424,17 +337,17 @@ def main():
         if args.action == "put":
             try:
                 if putSecret(args.credential, args.value, args.version,
-                             kms_key=args.key, region=region, table=args.table,
+                             kms_key=args.key, region=region,
                              context=args.context):
                     print("{0} has been stored".format(args.credential))
             except KmsError as e:
                 printStdErr(e)
-            except ConditionalCheckFailedException:
-                latestVersion = getHighestVersion(args.credential, region,
-                                                  args.table)
-                printStdErr("%s version %s is already in the credential store."
-                            "Use the -v flag to specify a new version" %
-                            (args.credential, latestVersion))
+            # except ConditionalCheckFailedException:
+            #     latestVersion = getHighestVersion(args.credential, region,
+            #                                       args.table)
+            #     printStdErr("%s version %s is already in the credential store."
+            #                 "Use the -v flag to specify a new version" %
+            #                 (args.credential, latestVersion))
             return
         if args.action == "get":
             try:
@@ -442,23 +355,19 @@ def main():
                     names = expand_wildcard(args.credential,
                                             [x["name"]
                                              for x
-                                             in listSecrets(region=region,
-                                                            table=args.table)])
+                                             in listSecrets(region=region)])
                     print(json.dumps(dict((name,
                                           getSecret(name,
                                                     args.version,
                                                     region=region,
-                                                    table=args.table,
                                                     context=args.context))
                                           for name in names)))
                 else:
                     sys.stdout.write(getSecret(args.credential, args.version,
-                                               region=region, table=args.table,
+                                               region=region,
                                                context=args.context))
                     if not args.noline:
                         sys.stdout.write("\n")
-            except ItemNotFound as e:
-                printStdErr(e)
             except KmsError as e:
                 printStdErr(e)
             except IntegrityError as e:
@@ -483,7 +392,6 @@ def main():
             print(output_func(secrets, **output_args))
             return
         if args.action == "setup":
-            createDdbTable(region=region, table=args.table)
             return
     else:
         parsers['super'].print_help()

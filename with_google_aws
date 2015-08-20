@@ -1,0 +1,5 @@
+#!/bin/bash
+
+ENVS=$(python login_google.py)
+
+/usr/bin/env $ENVS ${*}
