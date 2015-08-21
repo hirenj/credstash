@@ -1,5 +1,6 @@
 #!/bin/bash
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 
-ENVS=$(python login_google.py)
+ENVS=$(python $DIR/login_google.py)
 
 /usr/bin/env $ENVS ${*}

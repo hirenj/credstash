@@ -36,7 +36,7 @@ class AuthHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             auth_code = s.path
             s.wfile.write("</body></html>")
         else:
-            f = open(curdir + sep + '/index.html')
+            f = open(os.path.join(os.path.dirname(os.path.realpath(__file__)),'index.html'))
             s.send_response(200)
             s.send_header('Content-type', 'text/html')
             s.end_headers()
